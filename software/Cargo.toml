@@ -1,0 +1,14 @@
+[package]
+name = "p04"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "logic_analyzer"
+path = "src/main.rs"
+
+[dependencies]
+serialport = "4.6"
+eframe = "0.29"
+egui = "0.29"
+rfd = "0.15"
