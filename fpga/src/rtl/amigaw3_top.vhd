@@ -127,6 +127,8 @@ architecture Behavioral of amigaw3_top is
     signal bus_state_prev : integer range 0 to 3 := 0;
 
     signal uart_trigger : std_logic := '0';
+    signal uart_rw      : std_logic := '1';
+    signal uart_final_rw: std_logic;
     signal uart_tx_int  : std_logic := '1';
     signal uart_data    : std_logic_vector(15 downto 0) := (others => '0');
     signal uart_addr    : std_logic_vector(31 downto 0) := (others => '0');
@@ -315,6 +317,7 @@ begin
                             uart_trigger <= '1';
                             uart_addr    <= cpu_addr;
                             uart_data    <= cpu_data_out;
+                            uart_rw      <= cpu_rw;       -- LATCHEAR rw
                         end if;
                         bus_state <= 3;
                     when 3 =>
@@ -448,12 +451,13 @@ begin
     uart_final_trigger <= uart_trigger or cop_trigger;
     uart_final_addr    <= cop_uart_addr when cop_trigger = '1' else uart_addr;
     uart_final_data    <= cop_uart_data when cop_trigger = '1' else uart_data;
+    uart_final_rw      <= '0' when cop_trigger = '1' else uart_rw;  -- '0' para Copper writes
     uart_tx_o          <= uart_tx_int;
 
     inst_uart : entity work.uart_debug_unit
         port map (clk=>clk_28m, trigger=>uart_final_trigger,
                   addr=>uart_final_addr, data=>uart_final_data,
-                  rw=>cpu_rw, as=>cpu_as, tx_pin=>uart_tx_int, busy_o=>open);
+                  rw=>uart_final_rw, as=>cpu_as, tx_pin=>uart_tx_int, busy_o=>open);
 
     inst_denise : entity work.Amiga_Denise
         port map (clk_7m=>clk_28m, reset_n=>system_ready,
@@ -527,9 +531,9 @@ begin
     internal_signals(8)  <= sel_ram;
     internal_signals(9)  <= sel_ciaa;
     internal_signals(10) <= overlay;
-    internal_signals(11) <= vblank_pulse;
-    internal_signals(12) <= cpu_halt;
-    internal_signals(13) <= ciaa_irq;
+    internal_signals(11) <= cpu_addr(20);    -- A20 (region 1MB)
+    internal_signals(12) <= cpu_addr(22);    -- A22
+    internal_signals(13) <= cpu_addr(23);    -- A23 (region 16MB high)
     internal_signals(14) <= ram_we(0);
     internal_signals(15) <= ram_we(1);
 
