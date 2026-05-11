@@ -71,6 +71,9 @@ architecture Behavioral of amigaw3_top is
 
     signal sel_ciaa    : std_logic;
     signal ciaa_data   : std_logic_vector(7 downto 0);
+    signal ciab_data   : std_logic_vector(7 downto 0);
+    signal ciab_irq    : std_logic;
+    signal sel_ciab    : std_logic;
     signal ciaa_irq    : std_logic;
 
     signal sel_chipset : std_logic;
@@ -144,7 +147,8 @@ architecture Behavioral of amigaw3_top is
     -- ANALIZADOR LOGICO -- nuevas señales
     -- =================================================================
     constant CLK_HZ_ANA : integer := 28_375_000;     -- frecuencia exacta clk_28m
-    constant BAUD   : integer := 2_000_000;        -- max seguro PL2303 antiguo
+    --constant BAUD   : integer := 2_000_000;        -- max seguro PL2303 antiguo
+    constant BAUD   : integer := 921_600;        -- FIXED: PL2303 máximo seguro
     constant THROTTLE : integer := 500;          -- evita desborde buffer Linux
     constant N_INT      : integer := 16;
     constant N_CH_ANA   : integer := 8;
@@ -277,7 +281,12 @@ begin
                           cpu_uds='0' and bus_state=3 else '0';
     ram_we(0) <= '1' when sel_ram='1' and cpu_rw='0' and
                           cpu_lds='0' and bus_state=3 else '0';
-    sel_ciaa    <= '1' when cpu_addr(23 downto 12) = x"BFE" else '0';
+--    sel_ciaa    <= '1' when cpu_addr(23 downto 21) = "101" and cpu_addr(12) = '0' else '0';
+--    sel_ciab    <= '1' when cpu_addr(23 downto 21) = "101" and cpu_addr(13) = '0' else '0';
+
+    sel_ciaa <= '1' when cpu_addr(23 downto 13) = "10111111110" else '0'; -- 0xBFE***   FIX Posible Overlap CIA-A/CIA-B
+    sel_ciab <= '1' when cpu_addr(23 downto 13) = "10111111101" else '0'; -- 0xBFD***  FIX Posible Overlap CIA-A/CIA-B
+    
     sel_chipset <= '1' when cpu_addr(23 downto 16) = x"DF"  else '0';
 
     cop_gnt <= '1' when bus_state = 0 and cpu_as = '1' and blt_dma_req = '0' else '0';
@@ -332,6 +341,7 @@ begin
     cpu_data_in <= rom_data          when sel_rom     = '1' else
                    ram_data          when sel_ram     = '1' else
                    x"FF" & ciaa_data when sel_ciaa   = '1' else
+                   ciab_data & x"FF" when sel_ciab   = '1' else
                    blt_busy & dmacon when sel_chipset = '1' and cpu_addr(8 downto 1) = x"01" else
                    '0' & intena      when sel_chipset = '1' and cpu_addr(8 downto 1) = x"0E" else
                    '0' & intreq      when sel_chipset = '1' and cpu_addr(8 downto 1) = x"0F" else
@@ -394,6 +404,8 @@ begin
             intena <= (others => '0'); intreq <= (others => '0'); dmacon <= (others => '0');
         elsif rising_edge(clk_28m) then
             if vblank_pulse = '1' then intreq(5) <= '1'; end if;
+           -- if ciab_irq    = '1' then intreq(13) <= '1'; end if;  -- CIA-B → level 6
+            if ciab_irq    = '1' then intreq(6) <= '1'; end if;  --FIX  INT6 correcto
             if chipset_we2 = '1' then
                 case cpu_addr(8 downto 1) is
                     when x"4B" =>
@@ -417,6 +429,13 @@ begin
                   data_in=>cpu_data_out(7 downto 0), data_out=>ciaa_data,
                   cs=>sel_ciaa, rw=>cpu_rw, is_cia_a=>'1', irq_out=>ciaa_irq);
 
+    -- CIA-B (chip 8520) - byte alto del bus, dirección 0xBFD000
+    inst_ciab : entity work.Amiga_CIA
+        port map (clk=>clk_28m, reset_n=>system_ready,
+                  addr=>cpu_addr(11 downto 0),
+                  data_in=>cpu_data_out(15 downto 8), data_out=>ciab_data,
+                  cs=>sel_ciab, rw=>cpu_rw, is_cia_a=>'0', irq_out=>ciab_irq);
+
     inst_ram : entity work.ram_chip
         port map (clka=>clk_28m, wea=>ram_we, addra=>ram_addr_mux,
                   dina=>cpu_data_out, douta=>ram_data,
@@ -431,8 +450,15 @@ begin
                   UDS_OUT=>cpu_uds, LDS_OUT=>cpu_lds,
                   DTACK_IN=>cpu_dtack, VPA_IN=>cpu_vpa, BERR_IN=>'1',
                   FC_OUT=>cpu_fc,
-                  IPL_IN=>"100" when (intreq(5)='1' and intena(5)='1' and intena(14)='1') else
-                          "101" when ciaa_irq = '1' else "111",
+--                  IPL_IN=>"001" when (intreq(13)='1' and intena(13)='1' and intena(14)='1') else  -- level 6 (CIA-B / external INT6)
+--                          "100" when (intreq(5)='1' and intena(5)='1' and intena(14)='1') else   -- level 3 (vblank)
+--                          "101" when (ciaa_irq='1' and intena(14)='1') else                      -- level 2 (CIA-A)
+--                          "111",
+                   -- FIX   Actualizar IPL_IN IPL_IN  
+                   IPL_IN=>"001" when (intreq(6)='1' and intena(6)='1' and intena(14)='1') else  -- level 6 (CIA-B)
+                          "100" when (intreq(5)='1' and intena(5)='1' and intena(14)='1') else   -- level 3 (vblank)
+                           "011" when (intreq(3)='1' and intena(3)='1' and intena(14)='1') else -- level 2 (CIA-A) "111",
+                           "111",
                   HALT_OUT=>cpu_halt,
                   ADDR_OUT=>cpu_addr, DATA_IN=>cpu_data_in, DATA_OUT=>cpu_data_out);
 
@@ -538,22 +564,41 @@ begin
     internal_signals(15) <= ram_we(1);
 
     -- UART2 para el analizador
-    inst_ana_uart_tx : entity work.uart_tx
+--    inst_ana_uart_tx : entity work.uart_tx
+--        generic map (CLK_HZ => CLK_HZ_ANA, BAUD => BAUD)
+--        port map (clk=>clk_28m, rst_n=>pll_locked,
+--                  data_in=>tx_byte, valid=>tx_valid,
+--                  ready=>tx_ready, tx=>ana_uart_tx);
+                  
+     inst_ana_uart_tx : entity work.uart_tx
         generic map (CLK_HZ => CLK_HZ_ANA, BAUD => BAUD)
-        port map (clk=>clk_28m, rst_n=>pll_locked,
+        port map (clk=>clk_28m, rst_n=>system_ready,
                   data_in=>tx_byte, valid=>tx_valid,
                   ready=>tx_ready, tx=>ana_uart_tx);
 
-    inst_ana_uart_rx : entity work.uart_rx
+--    inst_ana_uart_rx : entity work.uart_rx
+--        generic map (CLK_HZ => CLK_HZ_ANA, BAUD => BAUD)
+--        port map (clk=>clk_28m, rst_n=>pll_locked,
+--                  rx=>ana_uart_rx,
+--                  data_out=>rx_byte, data_valid=>rx_valid);
+ inst_ana_uart_rx : entity work.uart_rx
         generic map (CLK_HZ => CLK_HZ_ANA, BAUD => BAUD)
-        port map (clk=>clk_28m, rst_n=>pll_locked,
+        port map (clk=>clk_28m, rst_n=>system_ready,
                   rx=>ana_uart_rx,
                   data_out=>rx_byte, data_valid=>rx_valid);
 
     -- MUX configurable por UART2
+--    inst_ana_mux : entity work.probe_mux
+--        generic map (N_CH => N_CH_ANA, N_INT => N_INT)
+--        port map (clk=>clk_28m, rst_n=>pll_locked,
+--                  pmod_pins => dummy_pmod,     -- sin pines externos por ahora
+--                  internal_signals => internal_signals,
+--                  ext_mask => mux_ext_mask, sel => mux_sel,
+--                  probes => probes);
+
     inst_ana_mux : entity work.probe_mux
         generic map (N_CH => N_CH_ANA, N_INT => N_INT)
-        port map (clk=>clk_28m, rst_n=>pll_locked,
+        port map (clk=>clk_28m, rst_n=>system_ready,
                   pmod_pins => dummy_pmod,     -- sin pines externos por ahora
                   internal_signals => internal_signals,
                   ext_mask => mux_ext_mask, sel => mux_sel,
@@ -562,7 +607,8 @@ begin
     -- Capturador
     inst_ana_capture : entity work.logic_capture
         generic map (N_CH => N_CH_ANA, DEPTH => 8192, CLK_HZ => CLK_HZ_ANA)
-        port map (clk_sample=>clk_28m, rst_n=>pll_locked,
+        --port map (clk_sample=>clk_28m, rst_n=>pll_locked,
+        port map (clk_sample=>clk_28m, rst_n=>system_ready, -- FIX SINCRONIZAR Reset Signal Mismatch en UART  
                   probes=>probes,
                   arm=>cap_arm, test_mode=>cap_test,
                   trig_type=>cap_ttype, trig_ch=>cap_tch,
@@ -638,10 +684,15 @@ begin
                             when 4 => cap_tval  <= rx_byte;
                             when others => null;
                         end case;
-                        if rx_idx = 7 then
+--                        if rx_idx = 7 then
+--                            if rx_byte = x"A5" then fsm <= ST_ARM;
+--                            else                        fsm <= ST_IDLE; end if;
+--                            rx_idx <= 0;
+--                        else rx_idx <= rx_idx + 1; end if;
+                       if rx_idx = 7 then
+                            rx_idx <= 0;  -- FIXED: limpiar SIEMPRE
                             if rx_byte = x"A5" then fsm <= ST_ARM;
-                            else                        fsm <= ST_IDLE; end if;
-                            rx_idx <= 0;
+                            else                    fsm <= ST_IDLE; end if;
                         else rx_idx <= rx_idx + 1; end if;
                     end if;
 
@@ -675,7 +726,11 @@ begin
                                 cap_rd_en<='1'; cap_rd_addr<=(others=>'0');
                                 throttle_cnt<=THROTTLE; next_fsm<=ST_PRELOAD; fsm<=ST_WAIT; end if;
 
-                when ST_PRELOAD => fsm <= ST_SETTLE;
+                --when ST_PRELOAD => fsm <= ST_SETTLE;
+                when ST_PRELOAD => 
+                    cap_rd_en <= '1';  -- FIXED: pre-lectura para compensar latencia BRAM
+                    cap_rd_addr <= (others => '0');  -- FIXED: inicio garantizado
+                    fsm <= ST_SETTLE;
                 when ST_SETTLE  => tx_cnt<=(others=>'0'); fsm<=ST_DATA;
 
                 when ST_DATA =>
@@ -701,6 +756,7 @@ begin
 
                 when ST_DONE =>
                     if tx_ready='1' then fsm <= ST_IDLE; end if;
+                when others => fsm <= ST_IDLE;  -- FIXED: estado seguro
             end case;
          end if;  -- TEST_UART
         end if;
